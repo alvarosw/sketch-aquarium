@@ -1,0 +1,16 @@
+{
+  "name": "sketch-aquarium",
+  "version": "0.1.0",
+  "description": "Aquário de desenhos: pinte um animal no papel, fotografe e veja ele nadar.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  }
+}

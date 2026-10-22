@@ -1,0 +1,151 @@
+:root {
+  --bg: #0b3550;
+  --bg-deep: #062238;
+  --fg: #e8f6ff;
+  --muted: #9cc3d9;
+  --accent: #ffd166;
+  --card: rgba(255, 255, 255, 0.08);
+  --card-hover: rgba(255, 255, 255, 0.16);
+  --toolbar: #082a40;
+  --paper: #ffffff;
+  --sheet-bg: #e9eef2;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  color: var(--fg);
+  background: linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+  background-color: var(--bg-deep);
+}
+
+.home {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 48px 16px;
+}
+
+.home h1 {
+  margin: 0 0 8px;
+  font-size: clamp(1.8rem, 6vw, 2.6rem);
+  color: var(--accent);
+}
+
+.lead {
+  margin: 0 0 32px;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+.cards {
+  display: grid;
+  gap: 14px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 20px;
+  border-radius: 14px;
+  background: var(--card);
+  color: var(--fg);
+  text-decoration: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.card:hover,
+.card:focus-visible {
+  background: var(--card-hover);
+}
+
+.card strong {
+  font-size: 1.2rem;
+}
+
+.card span {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+a { color: var(--accent); }
+
+/* Printable sheets */
+
+body.templates {
+  background: var(--sheet-bg);
+  color: #111;
+}
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--toolbar);
+  color: var(--fg);
+}
+
+.toolbar a { color: var(--fg); }
+
+.toolbar button {
+  font: inherit;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #222;
+  cursor: pointer;
+}
+
+.sheet {
+  width: min(297mm, calc(100% - 32px));
+  aspect-ratio: 297 / 210;
+  margin: 16px auto;
+  background: var(--paper);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+}
+
+.sheet svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@page {
+  size: A4 landscape;
+  margin: 0;
+}
+
+@media print {
+  body.templates {
+    background: none;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .sheet {
+    width: 297mm;
+    height: 210mm;
+    aspect-ratio: auto;
+    margin: 0;
+    box-shadow: none;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .sheet:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+}

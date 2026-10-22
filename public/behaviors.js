@@ -24,7 +24,6 @@ const SPECIAL = { shark: 'bite', squid: 'ink', turtle: 'breathe', jellyfish: 'gl
 const SPECIAL_GAP = { shark: [10, 18], squid: [18, 35], turtle: [14, 26], jellyfish: [12, 22], ray: [14, 24], seahorse: [14, 26] };
 const GENTLE = new Set(['jellyfish', 'seahorse']); // smaller, slower dashes
 const ALARM_COOLDOWN = 5; // seconds before a creature can be startled again
-const TRAIL_SECONDS = 0.7;
 const INK_SECONDS = 3.5;
 const FLASH_SECONDS = 0.35;
 const MAX_PUFFS = 160;
@@ -51,7 +50,6 @@ export function createBehaviors({ creatures, depth, persp, screenW, screenH, yBo
         run: null, // movement in progress: dash, chase or rise (see stepRun)
         act: null, // timed change of shape or glow, no movement of its own
         alarmCd: 0, // seconds before this creature can be startled again
-        trail: [], // wake points behind a dash
         sx: 1, // drawn scale, reset every frame (see drawCreature)
         sy: 1,
         extra: 0,
@@ -98,7 +96,7 @@ export function createBehaviors({ creatures, depth, persp, screenW, screenH, yBo
 
   // A burst along (dx, dy): the speed goes from base up to peak and back (see stepRun).
   function dashRun(c, b, dx, dy, base, peak, dur) {
-    b.run = { kind: 'dash', t: 0, dur, dx, dy, base, peak, trailT: 0 };
+    b.run = { kind: 'dash', t: 0, dur, dx, dy, base, peak };
     const tail = at(c, -0.4, 0);
     burst(tail.x, tail.y, c.d, 3);
   }
@@ -242,12 +240,6 @@ export function createBehaviors({ creatures, depth, persp, screenW, screenH, yBo
         b.sx *= 1 - 0.03 * env;
         b.sy *= 1 + 0.05 * env;
       }
-      r.trailT -= dt;
-      if (env > 0.2 && r.trailT <= 0) {
-        r.trailT = 0.04;
-        const tail = at(c, -0.45, 0); // the wake starts behind the body, so it shows
-        b.trail.push({ x: tail.x, y: tail.y, life: TRAIL_SECONDS, w: screenH(c) * 0.26 });
-      }
     } else if (r.kind === 'chase') {
       const prey = r.prey;
       if (creatures.get(prey.id) !== prey || prey.state !== 'alive') {
@@ -296,7 +288,6 @@ export function createBehaviors({ creatures, depth, persp, screenW, screenH, yBo
     b.sx = 1;
     b.sy = 1;
     b.alarmCd = Math.max(0, b.alarmCd - dt);
-    b.trail = b.trail.filter((p) => (p.life -= dt) > 0);
     if (b.act) {
       b.act.t += dt;
       if (b.act.t >= b.act.dur) b.act = null;
@@ -396,23 +387,11 @@ export function createBehaviors({ creatures, depth, persp, screenW, screenH, yBo
     ctx.restore();
   }
 
-  // Trail and glow behind one creature (called before its body is drawn).
+  // Glow behind one creature (called before its body is drawn).
   function drawUnder(ctx, c) {
     const b = c.beh;
     if (!b) return;
     const fog = depth.fogAt(c.d);
-    ctx.lineCap = 'round';
-    for (let i = 1; i < b.trail.length; i++) {
-      const p = b.trail[i - 1];
-      const q = b.trail[i];
-      const k = Math.min(p.life, q.life) / TRAIL_SECONDS;
-      ctx.strokeStyle = `rgba(225, 250, 255, ${0.8 * k * (1 - fog)})`;
-      ctx.lineWidth = q.w * k;
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-      ctx.lineTo(q.x, q.y);
-      ctx.stroke();
-    }
     if (b.act && b.act.kind === 'glow') {
       const k = bump(b.act.t / b.act.dur) * (1 - fog * 0.5);
       const r = screenW(c) * 1.1;

@@ -184,14 +184,16 @@ function lidColor(g, sprite, [ex, ey, er]) {
   return `rgb(${(rs / n) | 0}, ${(gs / n) | 0}, ${(bs / n) | 0})`;
 }
 
-// Targets are not uniform: a straight path between two uniform points spends
-// most of its time near the middle, so many targets go to the outer bands.
-// Vertical limits at the creature's depth: its top edge may reach the top of
-// the screen, and its bottom edge may not go below the sand at that depth.
-// The bottom keeps a small extra margin for the bob and the tail's wave.
+// Vertical limits at depth d for a creature of its size: its top edge may reach
+// the top of the screen, and its bottom edge may not go below the sand at that
+// depth. The bottom keeps a small extra margin for the bob and the tail's wave.
+function boundsAt(c, d) {
+  const h = c.h * persp(d);
+  return [h / 2, Math.max(h / 2, depth.floorY(d) - h / 2 - h * 0.06)];
+}
+
 function yBounds(c) {
-  const h = screenH(c);
-  return [h / 2, Math.max(h / 2, depth.floorY(c.d) - h / 2 - h * 0.06)];
+  return boundsAt(c, c.d);
 }
 
 // Screen y of the species' depth band (yFrac) at the current depth.
@@ -200,34 +202,153 @@ function targetY(c) {
   return lo + (hi - lo) * c.yFrac;
 }
 
+// Coverage: how long creatures have spent in each cell of the visible volume
+// (x, y and depth). Targets go to the emptiest cells, so the whole tank gets
+// used and the middle does not fill up: straight paths between uniform targets
+// would cross the centre far more often than the edges. The counts fade
+// slowly, so the balance follows the current population.
+const COVER_COLS = 6;
+const COVER_ROWS = 5;
+const COVER_DEPTHS = 4;
+const COVER_CELLS = COVER_COLS * COVER_ROWS * COVER_DEPTHS;
+const COVER_FADE_SECONDS = 300;
+const COVER_TEMPERATURE = 0.25; // how strongly the emptiest cells win (lower is stricter)
+const BAND_PENALTY = 0.3; // score added when the target is outside the species' band
+const CLAIM_PENALTY = 0.5; // score added per other creature already heading for a cell
+const TARGET_CANDIDATES = 10; // cells drawn for each pick, the best path wins
+const PATH_SAMPLES = 5; // points along the path that are checked for coverage
+const NEAR_PENALTY = 0.6; // score added when the target is too close to the creature
+const cover = new Float64Array(COVER_CELLS);
+let coverTotal = 0;
+
+function coverIndex(x, y, d) {
+  const ix = clamp(Math.floor((x / W) * COVER_COLS), 0, COVER_COLS - 1);
+  const iy = clamp(Math.floor((y / H) * COVER_ROWS), 0, COVER_ROWS - 1);
+  const id = clamp(Math.floor(d * COVER_DEPTHS), 0, COVER_DEPTHS - 1);
+  return (id * COVER_ROWS + iy) * COVER_COLS + ix;
+}
+
+function updateCover(dt) {
+  const keep = Math.exp(-dt / COVER_FADE_SECONDS);
+  coverTotal = 0;
+  for (let i = 0; i < COVER_CELLS; i++) {
+    cover[i] *= keep;
+    coverTotal += cover[i];
+  }
+  for (const c of creatures.values()) {
+    if (c.state === 'leave') continue;
+    cover[coverIndex(c.x, c.y, c.d)] += dt;
+    coverTotal += dt;
+  }
+}
+
+// Picks the next target. Each cell gets a base score: how crowded it is (1 is an
+// average cell, 0 is empty), plus soft preferences for the species band, for
+// cells other creatures already head for, and for targets far enough away to
+// make a real cruise. Candidate cells are drawn with a weight that favours the
+// emptiest ones. Each candidate is then judged by the path from the creature to
+// it too: creatures spend most of their time on the way between targets, so a
+// path through the middle loads the centre, while a path through empty space does not.
 function pickTarget(c) {
   const [d0, d1] = c.motion.depth;
-  const w = screenW(c);
-  const minX = w * 0.5;
-  const maxX = W - w * 0.5;
-  const r = Math.random();
-  let tx;
-  if (c.species === 'shark' && r < 0.12) {
-    // Big sharks sometimes swim partly past an edge, then turn back.
-    tx = Math.random() < 0.5 ? -w * 0.3 : W + w * 0.3;
-  } else if (r < 0.5) {
-    tx = Math.random() < 0.5 ? rand(minX, W * 0.2) : rand(W * 0.8, maxX);
-  } else {
-    tx = rand(minX, maxX);
+  const upright = UPRIGHT.has(c.motion.type);
+  const mean = coverTotal / COVER_CELLS;
+  // Other creatures already heading for each cell, so they do not all pile up.
+  const claims = new Float64Array(COVER_CELLS);
+  for (const o of creatures.values()) if (o !== c && o.state !== 'leave' && o.cell >= 0) claims[o.cell]++;
+  const base = new Float64Array(COVER_CELLS);
+  const weight = new Float64Array(COVER_CELLS);
+  let total = 0;
+  for (let cell = 0; cell < COVER_CELLS; cell++) {
+    const ix = cell % COVER_COLS;
+    const iy = Math.floor(cell / COVER_COLS) % COVER_ROWS;
+    const id = Math.floor(cell / (COVER_COLS * COVER_ROWS));
+    // Depth at the middle of the cell, to see whether the row is reachable.
+    const [lo, hi] = boundsAt(c, (id + 0.5) / COVER_DEPTHS);
+    const rowLo = (iy / COVER_ROWS) * H;
+    const rowHi = ((iy + 1) / COVER_ROWS) * H;
+    // No legal height in this row at that depth (a far creature over the sand).
+    if (rowLo > hi || rowHi < lo) continue;
+    const yc = clamp((rowLo + rowHi) / 2, lo, hi);
+    const yFrac = hi > lo ? (yc - lo) / (hi - lo) : 0.5;
+    let s = (mean > 0 ? cover[cell] / mean : 0) + claims[cell] * CLAIM_PENALTY;
+    if (yFrac < d0 || yFrac > d1) s += BAND_PENALTY;
+    if (!upright && Math.hypot(((ix + 0.5) / COVER_COLS) * W - c.x, yc - c.y) < W * 0.2) s += NEAR_PENALTY;
+    base[cell] = s;
+    weight[cell] = Math.exp(-s / COVER_TEMPERATURE);
+    total += weight[cell];
   }
-  // Avoid picking a point right next to where the creature already is.
-  for (let i = 0; i < 3 && Math.abs(tx - c.x) < W * 0.2; i++) tx = rand(minX, maxX);
-  // Upright creatures mostly drift up and down, with small sideways moves.
-  if (UPRIGHT.has(c.motion.type)) tx = clamp(c.x + rand(-0.18, 0.18) * W, minX, maxX);
-  c.tx = tx;
-  // Same edge bias as x: half of the depth targets sit near the band limits.
-  const ry = Math.random();
-  c.yFrac = ry < 0.25 ? rand(d0, d0 + (d1 - d0) * 0.2) : ry < 0.5 ? rand(d1 - (d1 - d0) * 0.2, d1) : rand(d0, d1);
+  if (total <= 0) return; // nothing reachable: keep the current target
+
+  let best = null;
+  let bestScore = Infinity;
+  for (let k = 0; k < TARGET_CANDIDATES; k++) {
+    const cell = drawCell(weight, total);
+    const cand = cellTarget(c, cell);
+    const score = base[cell] + pathLoad(c, cand, mean) + Math.random() * 0.05; // ties broken at random
+    if (score < bestScore) {
+      best = cand;
+      bestScore = score;
+    }
+  }
+  c.cell = best.cell;
+  c.tx = best.tx;
+  c.td = best.td;
+  c.yFrac = best.yFrac;
   c.ty = targetY(c);
-  // Target depth: some creatures come close to the viewer, some go far away.
-  const rd = Math.random();
-  c.td = rd < 0.2 ? rand(0, 0.12) : rd < 0.4 ? rand(0.88, 1) : rand(0, 1);
   c.wander = rand(5, 12);
+}
+
+// Draws a cell index with probability proportional to its weight; -1 if none.
+function drawCell(weight, total) {
+  // Rounding can leave r a little above zero at the end, so the last
+  // reachable cell is the fallback.
+  let r = Math.random() * total;
+  let cell = -1;
+  for (let i = 0; i < COVER_CELLS; i++) {
+    if (weight[i] === 0) continue;
+    cell = i;
+    r -= weight[i];
+    if (r <= 0) break;
+  }
+  return cell;
+}
+
+// A random target inside a cell. The outer columns reach past the screen edges,
+// so targets can lie beyond them. The depth is random inside the cell's depth
+// range, and y is random inside the cell's rows, clamped to the legal height.
+function cellTarget(c, cell) {
+  const ix = cell % COVER_COLS;
+  const iy = Math.floor(cell / COVER_COLS) % COVER_ROWS;
+  const id = Math.floor(cell / (COVER_COLS * COVER_ROWS));
+  const d = (id + Math.random()) / COVER_DEPTHS;
+  const w = c.w * persp(d);
+  const [lo, hi] = boundsAt(c, d);
+  const colLo = ix === 0 ? -w * 0.3 : (ix / COVER_COLS) * W;
+  const colHi = ix === COVER_COLS - 1 ? W + w * 0.3 : ((ix + 1) / COVER_COLS) * W;
+  // Upright creatures mostly drift up and down, with small sideways moves.
+  const tx = UPRIGHT.has(c.motion.type) ? clamp(c.x + rand(-0.18, 0.18) * W, -w * 0.3, W + w * 0.3) : rand(colLo, colHi);
+  const rowLo = (iy / COVER_ROWS) * H;
+  const rowHi = ((iy + 1) / COVER_ROWS) * H;
+  const a = Math.max(rowLo, lo);
+  const b = Math.min(rowHi, hi);
+  const ty = a <= b ? rand(a, b) : clamp(rowLo, lo, hi);
+  return { cell, tx, td: d, yFrac: hi > lo ? (ty - lo) / (hi - lo) : 0.5, ty };
+}
+
+// Average coverage along the straight path from the creature to a candidate
+// target, in units of the mean cell. Depth is blended along the path too.
+function pathLoad(c, cand, mean) {
+  if (mean <= 0) return 0;
+  let sum = 0;
+  for (let i = 1; i <= PATH_SAMPLES; i++) {
+    const s = i / PATH_SAMPLES;
+    const x = c.x + (cand.tx - c.x) * s;
+    const y = c.y + (cand.ty - c.y) * s;
+    const d = c.d + (cand.td - c.d) * s;
+    sum += cover[coverIndex(x, y, d)] / mean;
+  }
+  return sum / PATH_SAMPLES;
 }
 
 function spawnSparks(x, y, radius, count, size = 1) {
@@ -259,6 +380,7 @@ function spawnCreature(record, mode) {
     td: 0, // target depth, picked in pickTarget
     depthSpeed: rand(DEPTH_SPEED_MIN, DEPTH_SPEED_MAX),
     yFrac: 0, // where in the species' depth band the target lies
+    cell: -1, // coverage cell of the current target, see pickTarget
     phase: Math.random() * TAU,
     jetOffset: Math.random(),
     eyes: species.eyes,
@@ -745,6 +867,7 @@ function frame(now) {
     }
   }
   if (removed) updateHint();
+  updateCover(dt);
   updateScenery(dt);
   render();
   requestAnimationFrame(frame);
@@ -796,7 +919,12 @@ function setup() {
           id: c.id,
           species: c.species,
           d: c.d,
+          x: c.x,
           y: c.y,
+          h: screenH(c),
+          tx: c.tx,
+          ty: c.ty,
+          td: c.td,
           bottom: c.y + screenH(c) / 2,
           sand: depth.floorY(c.d),
           w: screenW(c),

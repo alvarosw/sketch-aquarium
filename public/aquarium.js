@@ -6,6 +6,7 @@
 // same model as the scenery.
 import { byId } from './shared/species.js';
 import { createScenery } from './scenery.js';
+import { createBehaviors } from './behaviors.js';
 
 const TAU = Math.PI * 2;
 const MAX_DPR = 2;
@@ -70,6 +71,7 @@ const easeOutCubic = (t) => 1 - (1 - t) ** 3;
 // Drawn size of a creature at its depth.
 const screenW = (c) => c.w * persp(c.d);
 const screenH = (c) => c.h * persp(c.d);
+const behaviors = createBehaviors({ creatures, depth, persp, screenW, screenH, yBounds });
 
 function makeCanvas(w, h) {
   const c = document.createElement('canvas');
@@ -327,7 +329,7 @@ function cellTarget(c, cell) {
   const colLo = ix === 0 ? -w * 0.3 : (ix / COVER_COLS) * W;
   const colHi = ix === COVER_COLS - 1 ? W + w * 0.3 : ((ix + 1) / COVER_COLS) * W;
   // Upright creatures mostly drift up and down, with small sideways moves.
-  const tx = UPRIGHT.has(c.motion.type) ? clamp(c.x + rand(-0.18, 0.18) * W, -w * 0.3, W + w * 0.3) : rand(colLo, colHi);
+  const tx = UPRIGHT.has(c.motion.type) ? clamp(c.x + rand(-0.18, 0.18) * W, w * 0.5, W - w * 0.5) : rand(colLo, colHi);
   const rowLo = (iy / COVER_ROWS) * H;
   const rowHi = ((iy + 1) / COVER_ROWS) * H;
   const a = Math.max(rowLo, lo);
@@ -397,6 +399,7 @@ function spawnCreature(record, mode) {
     tx: 0,
     ty: 0,
     wander: 0,
+    outside: 0, // seconds with the centre off screen, see updateCreature
     f: 1, // facing: +1 right (sprite as drawn), -1 left (mirrored), eased in between
     pitch: 0,
     thrust: 0,
@@ -419,7 +422,7 @@ function spawnCreature(record, mode) {
   if (mode === 'add') {
     // New creatures swim in from one side of the screen.
     const dir = Math.random() < 0.5 ? 1 : -1;
-    c.x = dir > 0 ? -screenW(c) * 0.6 : W + screenW(c) * 0.6;
+    c.x = dir > 0 ? -screenW(c) * 0.35 : W + screenW(c) * 0.35;
     c.vx = dir * c.baseSpeed * persp(c.d) * 2;
     c.state = 'enter';
     c.age = 0;
@@ -432,6 +435,8 @@ function spawnCreature(record, mode) {
   }
   c.f = c.vx < 0 ? -1 : 1;
   pickTarget(c);
+  // Newcomers swim in to the middle of the tank first, whatever the species.
+  if (mode === 'add') c.tx = rand(W * 0.3, W * 0.7);
 
   const img = new Image();
   img.onload = () => {
@@ -519,6 +524,12 @@ function updateCreature(c, dt) {
     const dx = c.tx - c.x;
     const dy = c.ty - c.y;
     if (c.wander <= 0 || dx * dx + dy * dy < (H * 0.05) ** 2) pickTarget(c);
+    // Safety net: a creature stuck mostly off screen gets an inward target.
+    c.outside = c.x < 0 || c.x > W ? c.outside + dt : 0;
+    if (c.outside > 3) {
+      c.tx = rand(W * 0.3, W * 0.7);
+      c.outside = 0;
+    }
   }
 
   // Speed, with the squid's jet pulses and the turtle's slow stroke.
@@ -541,6 +552,8 @@ function updateCreature(c, dt) {
     speed *= 1 + 0.1 * Math.sin(c.t * TAU * 0.5 + c.phase);
   }
   if (c.state === 'leave') speed *= 1.7;
+  // Slow swimmers would take ages to come in from the edge: hurry until on screen.
+  else if (c.x < 0 || c.x > W) speed *= 4;
 
   // Steer towards the target, with a gentle sideways wobble.
   const dx = c.tx - c.x;
@@ -591,7 +604,7 @@ function updateCreature(c, dt) {
 function drawStrips(c, img, amp, shear, over) {
   const tune = c.tune;
   const y0 = -c.h / 2;
-  const phase = time * tune.hz * TAU + c.phase;
+  const phase = (time + (c.beh ? c.beh.extra : 0)) * tune.hz * TAU + c.phase;
   const strips = c.strips;
   for (let k = 0; k < strips.length; k++) {
     const s = strips[k];
@@ -606,7 +619,7 @@ function drawStrips(c, img, amp, shear, over) {
 function drawRows(c, img, amp, over) {
   const tune = c.tune;
   const x0 = -c.w / 2;
-  const phase = time * tune.hz * TAU + c.phase;
+  const phase = (time + (c.beh ? c.beh.extra : 0)) * tune.hz * TAU + c.phase;
   for (const r of c.rows) {
     const weight = Math.pow(r.yn, tune.tailPow);
     const dx = amp * c.w * weight * Math.sin(phase - tune.spatial * r.yn);
@@ -680,6 +693,12 @@ function drawCreature(c) {
     bob = Math.sin(time * TAU * 0.35 + c.phase) * screenH(c) * 0.03;
     shear += Math.sin(time * TAU * 0.25 + c.phase * 0.5) * 0.035;
     sx *= 1 + Math.sin(time * TAU * 0.5 + c.phase) * 0.012;
+  }
+
+  // Behaviour modifiers from behaviors.js: dash pulse, chomp, ray flip, seahorse spin.
+  if (c.beh) {
+    sx *= c.beh.sx;
+    sy *= c.beh.sy;
   }
 
   let grow = 1;
@@ -807,7 +826,8 @@ function resize() {
   const sy = H ? newH / H : 1;
   W = newW;
   H = newH;
-  dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+  behaviors.resize(W, H);
+  dpr =Math.min(window.devicePixelRatio || 1, MAX_DPR);
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
 
@@ -845,9 +865,11 @@ function render() {
   const order = [...creatures.values()].sort((a, b) => a.d - b.d);
   for (const c of order) {
     drawGlow(c);
+    behaviors.drawUnder(ctx, c);
     drawCreature(c);
   }
   drawSparks();
+  behaviors.drawFront(ctx);
   ctx.globalAlpha = 1;
   scenery.drawFront(ctx, time);
 }
@@ -867,6 +889,7 @@ function frame(now) {
     }
   }
   if (removed) updateHint();
+  behaviors.update(dt);
   updateCover(dt);
   updateScenery(dt);
   render();
@@ -911,6 +934,8 @@ function setup() {
   // Small hook for tests and debugging; read-only.
   window.__aquarium = {
     count: liveCount,
+    // Starts an action on a creature by id, for tests: dash, bite, ink, breathe, glow, flip, bubbles.
+    trigger: (id, action) => behaviors.trigger(id, action),
     // Depth and screen extent of each live creature.
     snapshot: () =>
       [...creatures.values()]

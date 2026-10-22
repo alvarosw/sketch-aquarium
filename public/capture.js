@@ -82,14 +82,49 @@ function cropCreature(page, species) {
   const ctx = out.getContext('2d');
   ctx.drawImage(pageCanvas, BOX.x * PX_PER_MM, BOX.y * PX_PER_MM, CROP_W, CROP_H, 0, 0, CROP_W, CROP_H);
 
-  // Keep only the inside of the species outline. Outline coordinates are in
-  // box millimetres, so scale them to the crop's pixels.
-  ctx.save();
-  ctx.setTransform(PX_PER_MM, 0, 0, PX_PER_MM, 0, 0);
-  ctx.globalCompositeOperation = 'destination-in';
-  ctx.fill(new Path2D(species.outline));
-  ctx.restore();
+  // Keep the inside of the species outline. The photo can be off by 1-2 mm, so
+  // a thin tip just outside the outline is kept too, but only where it is
+  // clearly coloured: paper and the printed dashed line stay transparent.
+  const inside = outlineMask(species.outline, false);
+  const near = outlineMask(species.outline, true);
+  const img = ctx.getImageData(0, 0, CROP_W, CROP_H);
+  const px = img.data;
+  for (let i = 0; i < px.length; i += 4) {
+    if (inside.data[i + 3] > 0) {
+      px[i + 3] = (px[i + 3] * inside.data[i + 3]) / 255;
+    } else if (near.data[i + 3] > 127 && isColoured(px[i], px[i + 1], px[i + 2])) {
+      px[i + 3] = 255;
+    } else {
+      px[i + 3] = 0;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
   return out;
+}
+
+// Alpha mask of the outline in crop pixels. With `band`, the outline is also
+// stroked 2 mm to each side, so the mask reaches 2 mm past the printed line.
+// Outline coordinates are in box millimetres, so scale them to the crop.
+function outlineMask(outline, band) {
+  const c = document.createElement('canvas');
+  c.width = CROP_W;
+  c.height = CROP_H;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.setTransform(PX_PER_MM, 0, 0, PX_PER_MM, 0, 0);
+  g.fillStyle = '#000';
+  g.fill(new Path2D(outline));
+  if (band) {
+    g.lineWidth = 4;
+    g.lineJoin = 'round';
+    g.stroke(new Path2D(outline));
+  }
+  return g.getImageData(0, 0, CROP_W, CROP_H);
+}
+
+// Clearly coloured: not paper white and not gray or black ink.
+function isColoured(r, g, b) {
+  const hi = Math.max(r, g, b);
+  return hi >= 110 && hi - Math.min(r, g, b) >= 60;
 }
 
 function drawPreview(canvas) {

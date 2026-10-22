@@ -32,7 +32,7 @@ function codeCells(code) {
 // they like, and the aquarium makes them blink.
 function eyes(list) {
   return list
-    .map(([x, y, r]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="#000" stroke-width="0.6" stroke-dasharray="1.6 1.2"/>`)
+    .map(([x, y, r]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="#000" stroke-width="0.5" stroke-dasharray="2 1.5"/>`)
     .join('');
 }
 
@@ -40,11 +40,12 @@ function eyes(list) {
 // kept empty so a sheet photographed upside down never shows text where the
 // code cells would be.
 function sheetSvg(sp) {
-  // Only the outer silhouette, dashed: every part is stroked twice as thick,
-  // then the union is filled white, which hides the inner half of each
-  // stroke and every line inside the animal.
+  // Only the outer silhouette, dashed: each part is stroked 1.0 mm wide, then
+  // the union is filled white, which hides the inner half of each stroke, so
+  // the visible dashed line is 0.5 mm, the same as the eye circles, and no
+  // line inside the animal shows.
   const dash = sp.parts
-    .map((d) => `<path d="${d}" fill="none" stroke="#000" stroke-width="2.2" stroke-dasharray="3.2 2.2"/>`)
+    .map((d) => `<path d="${d}" fill="none" stroke="#000" stroke-width="1" stroke-dasharray="2 1.5"/>`)
     .join('');
   const font = 'font-family="Arial, Helvetica, sans-serif"';
   return `<svg viewBox="0 0 ${PAGE.w} ${PAGE.h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Folha para colorir: ${sp.name}">

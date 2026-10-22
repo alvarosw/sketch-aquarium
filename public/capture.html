@@ -4,13 +4,219 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Captura</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
+  <style>
+    .capture {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 20px 16px 48px;
+    }
+
+    .capture h1 {
+      margin: 0 0 4px;
+      font-size: 1.8rem;
+      color: var(--accent);
+    }
+
+    .capture .lead {
+      margin: 0 0 20px;
+      font-size: 1rem;
+    }
+
+    .capture [hidden] {
+      display: none !important;
+    }
+
+    .big-button,
+    .button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      min-height: 60px;
+      padding: 14px 18px;
+      border: 0;
+      border-radius: 14px;
+      font: inherit;
+      font-size: 1.15rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+    }
+
+    .big-button {
+      background: var(--accent);
+      color: #1d2b33;
+    }
+
+    .button.secondary {
+      background: var(--card-hover);
+      color: var(--fg);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .big-button:active,
+    .button:active {
+      transform: scale(0.98);
+    }
+
+    .panel {
+      margin: 18px 0;
+      padding: 16px;
+      border-radius: 16px;
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .status {
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+      text-align: center;
+      padding: 28px 0;
+    }
+
+    .preview {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 960 / 600;
+      border-radius: 12px;
+      background: #1b6fa0 linear-gradient(180deg, #2a86b8 0%, #0b3550 100%);
+    }
+
+    .species-line {
+      margin: 14px 0;
+      text-align: center;
+      font-size: 1.15rem;
+    }
+
+    .species-line strong {
+      color: var(--accent);
+    }
+
+    .actions {
+      display: grid;
+      gap: 12px;
+    }
+
+    .error {
+      margin: 0 0 16px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: rgba(255, 110, 110, 0.14);
+      border: 1px solid rgba(255, 130, 130, 0.45);
+      line-height: 1.45;
+    }
+
+    .sent {
+      margin: 0 0 14px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(120, 220, 160, 0.14);
+      border: 1px solid rgba(120, 220, 160, 0.4);
+      text-align: center;
+    }
+
+    .section-title {
+      margin: 28px 0 10px;
+      font-size: 1.2rem;
+      color: var(--accent);
+    }
+
+    .empty {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .grid {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 12px;
+    }
+
+    .fish-card {
+      position: relative;
+      margin: 0;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #1b6fa0 linear-gradient(180deg, #2a86b8 0%, #0b3550 100%);
+      aspect-ratio: 1 / 1;
+    }
+
+    .fish-card img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .fish-card button {
+      position: absolute;
+      right: 6px;
+      bottom: 6px;
+      min-width: 44px;
+      min-height: 44px;
+      border: 0;
+      border-radius: 10px;
+      background: rgba(8, 42, 64, 0.85);
+      color: #fff;
+      font-size: 1.2rem;
+      cursor: pointer;
+    }
+
+    .fish-card button:disabled {
+      opacity: 0.5;
+    }
+
+    input[type="file"] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+  </style>
 </head>
 <body>
-  <main class="home">
-    <h1>Em construção</h1>
-    <p class="lead">Esta página ainda não está pronta.</p>
-    <p><a href="/">&larr; Voltar ao início</a></p>
+  <main class="capture">
+    <h1>Captura</h1>
+    <p class="lead">Pinte a folha, depois fotografe a folha inteira. Eu encontro o desenho sozinho.</p>
+
+    <label class="big-button" id="take-label" for="photo">📷 Fotografar desenho</label>
+    <input id="photo" type="file" accept="image/*" capture="environment">
+
+    <section class="panel" id="view-busy" hidden>
+      <p class="status">Procurando a folha…</p>
+    </section>
+
+    <section class="panel" id="view-result" hidden>
+      <canvas class="preview" id="preview" width="960" height="600" aria-label="Prévia do desenho recortado"></canvas>
+      <p class="species-line">Encontrei: <strong id="species-name"></strong></p>
+      <p class="sent" id="sent" hidden></p>
+      <div class="actions">
+        <button class="button" id="send" type="button">Enviar para o aquário</button>
+        <button class="button secondary" id="again" type="button">Tirar outra</button>
+      </div>
+    </section>
+
+    <section class="panel" id="view-error" hidden>
+      <p class="error" id="error-message" role="alert"></p>
+      <div class="actions">
+        <button class="button" id="retry" type="button">Tentar novamente</button>
+      </div>
+    </section>
+
+    <h2 class="section-title">No aquário agora</h2>
+    <p class="empty" id="empty" hidden>Ainda não há criaturas no aquário.</p>
+    <ul class="grid" id="list"></ul>
+
+    <p style="margin-top:32px"><a href="/">&larr; Voltar ao início</a></p>
   </main>
+  <script type="module" src="/capture.js"></script>
 </body>
 </html>

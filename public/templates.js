@@ -1,6 +1,7 @@
 import { PAGE, MARKER, CODE, BOX, SPECIES } from '/shared/species.js';
 
-const INSTRUCTION = 'Pinte o desenho, depois fotografe a folha inteira';
+const INSTRUCTION = 'Desenhe os olhos e pinte o animal.';
+const HINT = 'Fotografe a folha inteira, com os 4 quadrados.';
 const r2 = (v) => Math.round(v * 100) / 100;
 
 function markers() {
@@ -27,19 +28,36 @@ function codeCells(code) {
     .join('');
 }
 
-function sheetSvg(sp) {
-  const body = sp.parts
-    .map((d) => `<path d="${d}" fill="#fff" stroke="#000" stroke-width="1.2" stroke-linejoin="round"/>`)
+// Eyes are only marked with a dashed circle: the child draws them however
+// they like, and the aquarium makes them blink.
+function eyes(list) {
+  return list
+    .map(([x, y, r]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="#000" stroke-width="0.6" stroke-dasharray="1.6 1.2"/>`)
     .join('');
+}
+
+// Header text stays at the left and right of the top margin: the middle is
+// kept empty so a sheet photographed upside down never shows text where the
+// code cells would be.
+function sheetSvg(sp) {
+  // Only the outer silhouette, dashed: every part is stroked twice as thick,
+  // then the union is filled white, which hides the inner half of each
+  // stroke and every line inside the animal.
+  const dash = sp.parts
+    .map((d) => `<path d="${d}" fill="none" stroke="#000" stroke-width="2.2" stroke-dasharray="3.2 2.2"/>`)
+    .join('');
+  const font = 'font-family="Arial, Helvetica, sans-serif"';
   return `<svg viewBox="0 0 ${PAGE.w} ${PAGE.h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Folha para colorir: ${sp.name}">
   <rect width="${PAGE.w}" height="${PAGE.h}" fill="#fff"/>
   ${markers()}
   ${codeCells(sp.code)}
-  <text x="${PAGE.w / 2}" y="19" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="5.5" fill="#000">${INSTRUCTION}</text>
-  <text x="30" y="206" font-family="Arial, Helvetica, sans-serif" font-size="4" fill="#000">${sp.name}</text>
-  <g transform="translate(${BOX.x} ${BOX.y})">
-    ${body}
-    <path d="${sp.details}" fill="none" stroke="#9a9a9a" stroke-width="0.6" stroke-dasharray="2 1.5" stroke-linecap="round"/>
+  <text x="32" y="22" ${font} font-size="8" font-weight="bold" fill="#000">${sp.name}</text>
+  <text x="${PAGE.w - 32}" y="17" text-anchor="end" ${font} font-size="4" fill="#000">${INSTRUCTION}</text>
+  <text x="${PAGE.w - 32}" y="22.5" text-anchor="end" ${font} font-size="3.4" fill="#555">${HINT}</text>
+  <g transform="translate(${BOX.x} ${BOX.y})" stroke-linecap="round" stroke-linejoin="round">
+    ${dash}
+    <path d="${sp.outline}" fill="#fff"/>
+    ${eyes(sp.eyes)}
   </g>
 </svg>`;
 }

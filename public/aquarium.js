@@ -2,6 +2,7 @@
 // Creatures arrive and leave through Server-Sent Events. Sprites are drawn as
 // vertical strips so the tail (or tentacles) can bend without a skeleton.
 import { byId } from './shared/species.js';
+import { createScenery } from './scenery.js';
 
 const TAU = Math.PI * 2;
 const MAX_DPR = 2;
@@ -12,7 +13,6 @@ const FADE_IN_SECONDS = 1.8;
 const LEAVE_SECONDS = 1.5;
 const GLOW_SECONDS = 1.6;
 const MAX_SPARKS = 160;
-const MAX_BUBBLES = 140;
 
 // Wave tuning per species. motion.type (from species.js) picks the behaviour,
 // these numbers only shape the look.
@@ -24,7 +24,14 @@ const TUNING = {
   shark: { amp: 0.03, hz: 1.0, spatial: 6.4, tailPow: 1.8 },
   squid: { amp: 0.018, hz: 1.6, spatial: 7.7, tailPow: 2.6 },
   turtle: { amp: 0.015, hz: 0.5, spatial: 5.5, tailPow: 1.0 },
+  ray: { amp: 0.05, hz: 0.9, spatial: 6, tailPow: 4 },
+  // Upright creatures sway in rows: the weight grows towards the bottom.
+  jellyfish: { amp: 0.035, hz: 0.8, spatial: 7, tailPow: 1.4 },
+  seahorse: { amp: 0.02, hz: 0.6, spatial: 5, tailPow: 2 },
 };
+const UPRIGHT = new Set(['drift', 'hover']);
+const JELLY_PERIOD = 2.6; // seconds per jellyfish bell pulse
+const BLINK_SECONDS = 0.24;
 // Strip widths in CSS px: narrow where the tail moves most, wide at the head.
 const STRIP_TAIL_PX = 4;
 const STRIP_HEAD_PX = 8;
@@ -35,20 +42,13 @@ const canvas = document.getElementById('scene');
 // The background covers every pixel, so an opaque canvas is safe and cheaper.
 const ctx = canvas.getContext('2d', { alpha: false });
 const hint = document.getElementById('hint');
+const scenery = createScenery();
 
 let W = 0;
 let H = 0;
 let dpr = 1;
 let time = 0;
 
-let bgLayer = null;
-let vignette = null;
-let rayGradient = null;
-let rays = [];
-let backWeeds = [];
-let foreWeeds = [];
-let plankton = [];
-let bubbles = [];
 let sparks = [];
 
 const creatures = new Map();
@@ -64,205 +64,6 @@ function makeCanvas(w, h) {
   c.width = Math.max(1, Math.round(w));
   c.height = Math.max(1, Math.round(h));
   return c;
-}
-
-// Sand top line, in CSS px. Shared by the background, seaweed and rocks.
-function sandTop(x) {
-  return H * 0.86 + Math.sin((x / W) * TAU * 1.3) * H * 0.012 + Math.sin((x / W) * TAU * 3.1 + 1) * H * 0.006;
-}
-
-// ---------------------------------------------------------------------------
-// Scenery
-// ---------------------------------------------------------------------------
-
-function drawRock(g, x, y, r) {
-  const grad = g.createRadialGradient(x - r * 0.3, y - r * 0.35, r * 0.1, x, y, r * 1.1);
-  grad.addColorStop(0, '#7f9d9c');
-  grad.addColorStop(0.6, '#3d5a5f');
-  grad.addColorStop(1, '#1b2f33');
-  g.fillStyle = grad;
-  g.beginPath();
-  g.ellipse(x, y, r, r * 0.6, 0, 0, TAU);
-  g.fill();
-}
-
-function buildBackground() {
-  const layer = makeCanvas(W * dpr, H * dpr);
-  const g = layer.getContext('2d');
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-  // Water: lighter near the surface, almost black at the bottom.
-  const water = g.createLinearGradient(0, 0, 0, H);
-  water.addColorStop(0, '#1d7fa3');
-  water.addColorStop(0.35, '#0d5378');
-  water.addColorStop(0.75, '#07304d');
-  water.addColorStop(1, '#031a2b');
-  g.fillStyle = water;
-  g.fillRect(0, 0, W, H);
-
-  // Soft glow where the light comes from.
-  const haze = g.createRadialGradient(W * 0.5, -H * 0.1, 0, W * 0.5, -H * 0.1, W * 0.75);
-  haze.addColorStop(0, 'rgba(170, 240, 255, 0.35)');
-  haze.addColorStop(1, 'rgba(170, 240, 255, 0)');
-  g.fillStyle = haze;
-  g.fillRect(0, 0, W, H);
-
-  // Sand floor.
-  const sand = g.createLinearGradient(0, H * 0.84, 0, H);
-  sand.addColorStop(0, '#e6c88f');
-  sand.addColorStop(0.45, '#b98f58');
-  sand.addColorStop(1, '#6f5030');
-  g.fillStyle = sand;
-  g.beginPath();
-  g.moveTo(0, H);
-  for (let x = 0; x <= W; x += W / 160) g.lineTo(x, sandTop(x));
-  g.lineTo(W, H);
-  g.closePath();
-  g.fill();
-
-  // Grain and ripples.
-  for (let i = 0; i < 1400; i++) {
-    const x = Math.random() * W;
-    const y = rand(H * 0.88, H);
-    g.fillStyle = Math.random() < 0.5 ? 'rgba(255,240,200,0.18)' : 'rgba(60,35,15,0.18)';
-    g.fillRect(x, y, Math.random() < 0.8 ? 1.5 : 3, 1.2);
-  }
-  g.strokeStyle = 'rgba(255, 240, 210, 0.12)';
-  g.lineWidth = 2;
-  for (let i = 0; i < 5; i++) {
-    const y = H * (0.9 + i * 0.02);
-    g.beginPath();
-    for (let x = 0; x <= W; x += W / 80) {
-      const yy = y + Math.sin(x / W * TAU * 6 + i) * 2;
-      if (x === 0) g.moveTo(x, yy);
-      else g.lineTo(x, yy);
-    }
-    g.stroke();
-  }
-
-  // Rocks sitting on the sand.
-  const rocks = [
-    [0.07, 0.07],
-    [0.27, 0.045],
-    [0.66, 0.05],
-    [0.9, 0.08],
-  ];
-  for (const [fx, fr] of rocks) {
-    const x = fx * W;
-    drawRock(g, x, sandTop(x) + H * fr * 0.2, H * fr);
-  }
-
-  bgLayer = layer;
-
-  // Dark corners draw the eye to the middle.
-  const vig = makeCanvas(W * dpr, H * dpr);
-  const vg = vig.getContext('2d');
-  vg.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const v = vg.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
-  v.addColorStop(0, 'rgba(0,0,0,0)');
-  v.addColorStop(1, 'rgba(0,8,16,0.55)');
-  vg.fillStyle = v;
-  vg.fillRect(0, 0, W, H);
-  vignette = vig;
-
-  rayGradient = ctx.createLinearGradient(0, 0, 0, H);
-  rayGradient.addColorStop(0, 'rgba(200, 246, 255, 0.55)');
-  rayGradient.addColorStop(1, 'rgba(200, 246, 255, 0)');
-}
-
-function makeWeeds(count, fore) {
-  const out = [];
-  const palette = fore ? ['#0c3b2a', '#11523a'] : ['#1f7a4d', '#2f9a5f', '#3aa86a'];
-  for (let i = 0; i < count; i++) {
-    out.push({
-      bx: fore ? (i === 0 ? 0.02 : 0.98) : rand(0.03, 0.97),
-      h: fore ? rand(0.4, 0.5) : rand(0.14, 0.32),
-      width: fore ? 0.035 : 0.014,
-      sway: fore ? 0.05 : rand(0.025, 0.045),
-      speed: rand(0.6, 1.1),
-      phase: rand(0, TAU),
-      color: palette[i % palette.length],
-    });
-  }
-  return out;
-}
-
-function drawWeeds(list, t, alpha) {
-  ctx.lineCap = 'round';
-  ctx.globalAlpha = alpha;
-  for (const w of list) {
-    const baseX = w.bx * W;
-    const baseY = sandTop(baseX) + H * 0.02;
-    const height = w.h * H;
-    let px = baseX;
-    let py = baseY;
-    const segs = 9;
-    ctx.strokeStyle = w.color;
-    for (let j = 1; j <= segs; j++) {
-      const f = j / segs;
-      const sway =
-        (Math.sin(t * w.speed + w.phase + f * 2.2) * 0.6 + Math.sin(t * w.speed * 0.37 + w.phase * 1.7 + f * 1.1) * 0.4) *
-        w.sway * H * f * f;
-      const x = baseX + sway;
-      const y = baseY - height * f;
-      ctx.lineWidth = w.width * H * (1 - 0.7 * f) + 1;
-      ctx.beginPath();
-      ctx.moveTo(px, py);
-      ctx.lineTo(x, y);
-      ctx.stroke();
-      px = x;
-      py = y;
-    }
-  }
-  ctx.globalAlpha = 1;
-}
-
-function drawRays(t) {
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = rayGradient;
-  for (const r of rays) {
-    const top = r.x * W + Math.sin(t * r.speed + r.phase) * W * 0.02;
-    const bottom = top + r.lean * W;
-    const wTop = r.w * W;
-    const wBottom = wTop * 2.4;
-    ctx.globalAlpha = 0.05 + 0.035 * Math.sin(t * r.speed * 1.7 + r.phase);
-    ctx.beginPath();
-    ctx.moveTo(top - wTop / 2, 0);
-    ctx.lineTo(top + wTop / 2, 0);
-    ctx.lineTo(bottom + wBottom / 2, H * 0.9);
-    ctx.lineTo(bottom - wBottom / 2, H * 0.9);
-    ctx.closePath();
-    ctx.fill();
-  }
-  ctx.restore();
-}
-
-function drawPlankton() {
-  ctx.fillStyle = 'rgb(200, 240, 255)';
-  for (const p of plankton) {
-    ctx.globalAlpha = p.a;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, TAU);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-}
-
-function drawBubbles() {
-  ctx.lineWidth = 1.2;
-  for (const b of bubbles) {
-    ctx.strokeStyle = 'rgba(225, 248, 255, 0.55)';
-    ctx.fillStyle = 'rgba(200, 240, 255, 0.07)';
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, b.r, 0, TAU);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-    ctx.beginPath();
-    ctx.arc(b.x - b.r * 0.35, b.y - b.r * 0.35, Math.max(0.8, b.r * 0.22), 0, TAU);
-    ctx.fill();
-  }
 }
 
 function drawSparks() {
@@ -306,6 +107,15 @@ function buildStrips(c) {
     x += width;
   }
   c.strips = strips;
+
+  // Horizontal rows for upright creatures, from the top (yn = 0) down.
+  const rows = [];
+  for (let y = 0; y < c.h - 0.01; ) {
+    const height = Math.min(STRIP_TAIL_PX, c.h - y);
+    rows.push({ dy: y - c.h / 2, dh: height, yn: (y + height / 2) / c.h, sy: y / c.h, sh: height / c.h });
+    y += height;
+  }
+  c.rows = rows;
 }
 
 function buildSprite(c) {
@@ -315,6 +125,42 @@ function buildSprite(c) {
   g.imageSmoothingQuality = 'high';
   g.drawImage(c.img, 0, 0, sprite.width, sprite.height);
   c.sprite = sprite;
+  c.lids = c.eyes.map((e) => lidColor(g, sprite, e));
+}
+
+// Eyelid colour: the average colour of the drawing in a ring just outside the
+// eye, so the lid looks like the skin the child painted around it.
+function lidColor(g, sprite, [ex, ey, er]) {
+  const cx = (ex / 240) * sprite.width;
+  const cy = (ey / 150) * sprite.height;
+  const r = (er / 150) * sprite.height;
+  const size = Math.ceil(r * 3.2);
+  const x0 = Math.max(0, Math.floor(cx - size / 2));
+  const y0 = Math.max(0, Math.floor(cy - size / 2));
+  let data;
+  try {
+    data = g.getImageData(x0, y0, Math.min(size, sprite.width - x0), Math.min(size, sprite.height - y0));
+  } catch {
+    return 'rgb(120, 120, 120)';
+  }
+  let rs = 0;
+  let gs = 0;
+  let bs = 0;
+  let n = 0;
+  for (let y = 0; y < data.height; y++) {
+    for (let x = 0; x < data.width; x++) {
+      const d = Math.hypot(x0 + x - cx, y0 + y - cy);
+      if (d < r * 1.25 || d > r * 1.6) continue;
+      const p = (y * data.width + x) * 4;
+      if (data.data[p + 3] < 200) continue;
+      rs += data.data[p];
+      gs += data.data[p + 1];
+      bs += data.data[p + 2];
+      n++;
+    }
+  }
+  if (!n) return 'rgb(120, 120, 120)';
+  return `rgb(${(rs / n) | 0}, ${(gs / n) | 0}, ${(bs / n) | 0})`;
 }
 
 // Targets are not uniform: a straight path between two uniform points spends
@@ -335,6 +181,8 @@ function pickTarget(c) {
   }
   // Avoid picking a point right next to where the creature already is.
   for (let i = 0; i < 3 && Math.abs(tx - c.x) < W * 0.2; i++) tx = rand(minX, maxX);
+  // Upright creatures mostly drift up and down, with small sideways moves.
+  if (UPRIGHT.has(c.motion.type)) tx = clamp(c.x + rand(-0.18, 0.18) * W, minX, maxX);
   c.tx = tx;
   // Same edge bias as x: half of the depth targets sit near the band limits.
   const ry = Math.random();
@@ -360,20 +208,6 @@ function spawnSparks(x, y, radius, count) {
   }
 }
 
-function spawnBubbles(x, y, count) {
-  for (let i = 0; i < count && bubbles.length < MAX_BUBBLES; i++) {
-    bubbles.push({
-      x: x + rand(-20, 20),
-      y: y + rand(-10, 10),
-      r: rand(3, 7),
-      speed: rand(120, 220),
-      phase: rand(0, TAU),
-      sway: rand(8, 18),
-      burst: true,
-    });
-  }
-}
-
 function spawnCreature(record, mode) {
   const species = byId(record.species);
   if (!species) return null;
@@ -385,6 +219,9 @@ function spawnCreature(record, mode) {
     z: Math.random(),
     phase: Math.random() * TAU,
     jetOffset: Math.random(),
+    eyes: species.eyes,
+    lids: [],
+    blinkAt: rand(1, 5),
     t: 0,
     scale: 0,
     w: 0,
@@ -454,7 +291,7 @@ function startLeave(c) {
   c.state = 'leave';
   c.leaveAge = 0;
   c.exitX = c.vx >= 0 ? W + c.w * 2 : -c.w * 2;
-  if (c.sprite) spawnBubbles(c.x, c.y, 8);
+  if (c.sprite) scenery.burst(c.x, c.y, 8);
 }
 
 // Soft repulsion between creatures that overlap, so they do not stack up.
@@ -516,7 +353,15 @@ function updateCreature(c, dt) {
 
   // Speed, with the squid's jet pulses and the turtle's slow stroke.
   let speed = c.baseSpeed;
-  if (type === 'jet') {
+  if (type === 'drift') {
+    // The bell contracts, pushes the jellyfish forward, then it coasts.
+    const p = ((c.t + c.jetOffset * JELLY_PERIOD) / JELLY_PERIOD) % 1;
+    const raw = p < 0.3 ? Math.sin((p / 0.3) * Math.PI) : 0;
+    c.thrust += (raw - c.thrust) * Math.min(1, dt * 10);
+    speed *= 0.35 + 1.8 * c.thrust;
+  } else if (type === 'flap') {
+    speed *= 1 + 0.25 * Math.sin(time * TAU * c.tune.hz + c.phase);
+  } else if (type === 'jet') {
     c.jetT += dt;
     const p = (c.jetT / JET_PERIOD + c.jetOffset) % 1;
     const raw = p < JET_THRUST_SHARE ? Math.sin((p / JET_THRUST_SHARE) * Math.PI) : 0;
@@ -536,7 +381,7 @@ function updateCreature(c, dt) {
   const sn = Math.sin(wobble);
   const ux = (dx * cs - dy * sn) / d;
   const uy = (dx * sn + dy * cs) / d;
-  const rate = type === 'jet' ? 5 : type === 'paddle' ? 1.2 : 2.5;
+  const rate = type === 'jet' ? 5 : type === 'paddle' || UPRIGHT.has(type) ? 1.2 : 2.5;
   const k = 1 - Math.exp(-rate * dt);
   c.vx += (ux * speed - c.vx) * k;
   c.vy += (uy * speed - c.vy) * k;
@@ -549,11 +394,12 @@ function updateCreature(c, dt) {
   }
 
   // Mirror smoothly when the heading changes, and tilt with the vertical speed.
-  if (Math.abs(c.vx) > 3) {
+  // Jellyfish have no front, so they never turn around.
+  if (Math.abs(c.vx) > 3 && type !== 'drift') {
     const df = Math.sign(c.vx) - c.f;
     c.f += Math.max(-dt * 4, Math.min(dt * 4, df));
   }
-  const targetPitch = clamp(Math.atan2(c.vy, Math.max(Math.abs(c.vx), 30)) * 0.8, -0.2, 0.2);
+  const targetPitch = UPRIGHT.has(type) ? 0 : clamp(Math.atan2(c.vy, Math.max(Math.abs(c.vx), 30)) * 0.8, -0.2, 0.2);
   c.pitch += (targetPitch - c.pitch) * Math.min(1, dt * 4);
 
   if (c.state === 'leave' && (c.x < -c.w * 2.5 || c.x > W + c.w * 2.5)) return false;
@@ -580,6 +426,52 @@ function drawStrips(c, amp, shear) {
   }
 }
 
+// Upright creatures: horizontal rows shifted sideways, more towards the
+// bottom, so tentacles and tails sway while the head stays still.
+function drawRows(c, amp) {
+  const img = c.sprite;
+  const tune = c.tune;
+  const x0 = -c.w / 2;
+  const phase = time * tune.hz * TAU + c.phase;
+  for (const r of c.rows) {
+    const weight = Math.pow(r.yn, tune.tailPow);
+    const dx = amp * c.w * weight * Math.sin(phase - tune.spatial * r.yn);
+    ctx.drawImage(img, 0, r.sy * img.height, img.width, r.sh * img.height, x0 + dx, r.dy, c.w, r.dh + 1);
+  }
+}
+
+// Blinking: an eyelid in the colour around the eye slides down and back up.
+function drawLids(c, shear) {
+  if (!c.lids.length) return;
+  const k = (time - c.blinkAt) / BLINK_SECONDS;
+  if (k < 0) return;
+  if (k > 1) {
+    // Sometimes a quick double blink.
+    c.blinkAt = time + (Math.random() < 0.2 ? 0.15 : rand(2.5, 6.5));
+    return;
+  }
+  const closed = Math.sin(k * Math.PI);
+  c.eyes.forEach(([ex, ey, er], i) => {
+    const x = (ex / 240 - 0.5) * c.w;
+    const y = (ey / 150 - 0.5) * c.h + x * shear;
+    const r = (er / 150) * c.h * 1.15;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, TAU);
+    ctx.clip();
+    const edge = y - r + 2 * r * closed;
+    ctx.fillStyle = c.lids[i];
+    ctx.fillRect(x - r, y - r, 2 * r, edge - (y - r));
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.lineWidth = Math.max(1, r * 0.18);
+    ctx.beginPath();
+    ctx.moveTo(x - r, edge);
+    ctx.quadraticCurveTo(x, edge + r * 0.25 * closed, x + r, edge);
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
 function drawCreature(c) {
   if (!c.sprite || c.alpha <= 0.005) return;
   const type = c.motion.type;
@@ -594,6 +486,16 @@ function drawCreature(c) {
     sx = 1 - 0.1 * c.thrust;
     sy = 1 + 0.07 * c.thrust;
     amp *= 1 + 0.9 * c.thrust;
+  } else if (type === 'drift') {
+    // Bell squeezes in and stretches up while pulsing.
+    sx = 1 - 0.08 * c.thrust;
+    sy = 1 + 0.06 * c.thrust;
+  } else if (type === 'flap') {
+    // Seen from above, the wings beating up and down look like the body
+    // getting narrower and wider.
+    sy = 1 + 0.1 * Math.sin(time * TAU * c.tune.hz + c.phase);
+  } else if (type === 'hover') {
+    bob = Math.sin(time * TAU * 0.3 + c.phase) * c.h * 0.04;
   } else if (type === 'paddle') {
     bob = Math.sin(time * TAU * 0.35 + c.phase) * c.h * 0.03;
     shear += Math.sin(time * TAU * 0.25 + c.phase * 0.5) * 0.035;
@@ -608,7 +510,9 @@ function drawCreature(c) {
   ctx.globalAlpha = c.alpha * (0.8 + 0.2 * c.z);
   ctx.translate(c.x, c.y + bob);
   ctx.scale(c.f * sx * grow, sy * grow);
-  drawStrips(c, amp, shear);
+  if (UPRIGHT.has(type)) drawRows(c, amp);
+  else drawStrips(c, amp, shear);
+  drawLids(c, UPRIGHT.has(type) ? 0 : shear);
   ctx.restore();
 }
 
@@ -719,7 +623,7 @@ function resize() {
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
 
-  for (const p of [...bubbles, ...sparks, ...plankton]) {
+  for (const p of sparks) {
     p.x *= sx;
     p.y *= sy;
   }
@@ -729,60 +633,11 @@ function resize() {
     computeSize(c);
     if (c.img) buildSprite(c);
   }
-  buildBackground();
-}
-
-function initScenery() {
-  rays = Array.from({ length: 8 }, (_, i) => ({
-    x: (i + Math.random() * 0.6) / 8,
-    w: rand(0.012, 0.04),
-    lean: rand(-0.12, 0.12),
-    speed: rand(0.15, 0.35),
-    phase: rand(0, TAU),
-  }));
-  backWeeds = makeWeeds(12, false);
-  foreWeeds = makeWeeds(2, true);
-  plankton = Array.from({ length: 90 }, () => ({
-    x: rand(0, W),
-    y: rand(0, H),
-    r: rand(0.6, 1.8),
-    a: rand(0.2, 0.6),
-    vx: rand(-6, 6),
-    vy: rand(-10, -2),
-    ph: rand(0, TAU),
-  }));
-  bubbles = Array.from({ length: 45 }, () => ({
-    x: rand(0, W),
-    y: rand(0, H),
-    r: rand(2, 6),
-    speed: rand(40, 110),
-    phase: rand(0, TAU),
-    sway: rand(6, 16),
-    burst: false,
-  }));
+  scenery.resize(W, H, dpr, ctx);
 }
 
 function updateScenery(dt) {
-  for (const p of plankton) {
-    p.x += (p.vx + Math.sin(time * 0.5 + p.ph) * 4) * dt;
-    p.y += p.vy * dt;
-    if (p.y < -4) p.y = H + 4;
-    if (p.x < -4) p.x = W + 4;
-    if (p.x > W + 4) p.x = -4;
-  }
-  for (let i = bubbles.length - 1; i >= 0; i--) {
-    const b = bubbles[i];
-    b.y -= b.speed * dt;
-    b.x += Math.sin(time * 1.3 + b.phase) * b.sway * dt;
-    if (b.y < -b.r * 2) {
-      if (b.burst) {
-        bubbles.splice(i, 1);
-      } else {
-        b.y = H + b.r * 2;
-        b.x = rand(0, W);
-      }
-    }
-  }
+  scenery.update(dt, time);
   for (let i = sparks.length - 1; i >= 0; i--) {
     const s = sparks[i];
     s.life -= dt;
@@ -796,10 +651,7 @@ function render() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
-  ctx.drawImage(bgLayer, 0, 0, W, H);
-  drawRays(time);
-  drawWeeds(backWeeds, time, 1);
-  drawPlankton();
+  scenery.drawBack(ctx, time);
 
   if (orderDirty) {
     drawOrder = [...creatures.values()].sort((a, b) => a.z - b.z);
@@ -810,10 +662,8 @@ function render() {
     drawCreature(c);
   }
   drawSparks();
-  drawWeeds(foreWeeds, time, 0.55);
-  drawBubbles();
   ctx.globalAlpha = 1;
-  ctx.drawImage(vignette, 0, 0, W, H);
+  scenery.drawFront(ctx, time);
 }
 
 let lastFrame = performance.now();
@@ -849,7 +699,6 @@ function wakeCursor() {
 
 function setup() {
   resize();
-  initScenery();
   window.addEventListener('resize', () => {
     resize();
   });

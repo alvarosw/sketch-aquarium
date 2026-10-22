@@ -1,6 +1,9 @@
 // Aquarium display: a procedural underwater scene with the live creatures.
 // Creatures arrive and leave through Server-Sent Events. Sprites are drawn as
 // vertical strips so the tail (or tentacles) can bend without a skeleton.
+// Creatures swim in depth too: d = 0 is far (near the horizon), d = 1 is near.
+// Depth sets their size, speed, haze and the sand they can reach, using the
+// same model as the scenery.
 import { byId } from './shared/species.js';
 import { createScenery } from './scenery.js';
 
@@ -13,6 +16,11 @@ const FADE_IN_SECONDS = 1.8;
 const LEAVE_SECONDS = 1.5;
 const GLOW_SECONDS = 1.6;
 const MAX_SPARKS = 160;
+const NEAR_SIZE = 0.8; // drawn size at the front (depth 1), times motion.size * H
+const DEPTH_SPEED_MIN = 0.08; // depth units per second: a full crossing takes 7 to 12 s
+const DEPTH_SPEED_MAX = 0.14;
+const FOG_MIN = 0.03; // below this haze level the fog pass is skipped
+const SEPARATION_DEPTH = 0.15; // creatures this far apart in depth do not push each other
 
 // Wave tuning per species. motion.type (from species.js) picks the behaviour,
 // these numbers only shape the look.
@@ -43,6 +51,8 @@ const canvas = document.getElementById('scene');
 const ctx = canvas.getContext('2d', { alpha: false });
 const hint = document.getElementById('hint');
 const scenery = createScenery();
+const depth = scenery.depth;
+const persp = depth.perspective;
 
 let W = 0;
 let H = 0;
@@ -52,12 +62,14 @@ let time = 0;
 let sparks = [];
 
 const creatures = new Map();
-let drawOrder = [];
-let orderDirty = true;
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const easeOutCubic = (t) => 1 - (1 - t) ** 3;
+
+// Drawn size of a creature at its depth.
+const screenW = (c) => c.w * persp(c.d);
+const screenH = (c) => c.h * persp(c.d);
 
 function makeCanvas(w, h) {
   const c = document.createElement('canvas');
@@ -82,11 +94,12 @@ function drawSparks() {
 // Creatures
 // ---------------------------------------------------------------------------
 
+// Sizes are kept at the front (near) scale; depth is applied when drawing.
 function computeSize(c) {
   const ratio = c.img ? c.img.naturalHeight / c.img.naturalWidth : 0.625;
-  c.w = c.motion.size * H * c.scale;
+  c.w = c.motion.size * H * NEAR_SIZE;
   c.h = c.w * ratio;
-  c.baseSpeed = c.motion.speed * (H / 1080) * (0.7 + 0.5 * c.z);
+  c.baseSpeed = c.motion.speed * (H / 1080);
   buildStrips(c);
 }
 
@@ -126,6 +139,14 @@ function buildSprite(c) {
   g.drawImage(c.img, 0, 0, sprite.width, sprite.height);
   c.sprite = sprite;
   c.lids = c.eyes.map((e) => lidColor(g, sprite, e));
+  // Same silhouette filled with the water colour, drawn over the creature to haze it.
+  const fogged = makeCanvas(sprite.width, sprite.height);
+  const fg = fogged.getContext('2d');
+  fg.drawImage(sprite, 0, 0);
+  fg.globalCompositeOperation = 'source-in';
+  fg.fillStyle = depth.fog;
+  fg.fillRect(0, 0, fogged.width, fogged.height);
+  c.fogSprite = fogged;
 }
 
 // Eyelid colour: the average colour of the drawing in a ring just outside the
@@ -165,15 +186,30 @@ function lidColor(g, sprite, [ex, ey, er]) {
 
 // Targets are not uniform: a straight path between two uniform points spends
 // most of its time near the middle, so many targets go to the outer bands.
+// Vertical limits at the creature's depth: its top edge may reach the top of
+// the screen, and its bottom edge may not go below the sand at that depth.
+// The bottom keeps a small extra margin for the bob and the tail's wave.
+function yBounds(c) {
+  const h = screenH(c);
+  return [h / 2, Math.max(h / 2, depth.floorY(c.d) - h / 2 - h * 0.06)];
+}
+
+// Screen y of the species' depth band (yFrac) at the current depth.
+function targetY(c) {
+  const [lo, hi] = yBounds(c);
+  return lo + (hi - lo) * c.yFrac;
+}
+
 function pickTarget(c) {
   const [d0, d1] = c.motion.depth;
-  const minX = c.w * 0.5;
-  const maxX = W - c.w * 0.5;
+  const w = screenW(c);
+  const minX = w * 0.5;
+  const maxX = W - w * 0.5;
   const r = Math.random();
   let tx;
   if (c.species === 'shark' && r < 0.12) {
     // Big sharks sometimes swim partly past an edge, then turn back.
-    tx = Math.random() < 0.5 ? -c.w * 0.3 : W + c.w * 0.3;
+    tx = Math.random() < 0.5 ? -w * 0.3 : W + w * 0.3;
   } else if (r < 0.5) {
     tx = Math.random() < 0.5 ? rand(minX, W * 0.2) : rand(W * 0.8, maxX);
   } else {
@@ -186,12 +222,15 @@ function pickTarget(c) {
   c.tx = tx;
   // Same edge bias as x: half of the depth targets sit near the band limits.
   const ry = Math.random();
-  const yFrac = ry < 0.25 ? rand(d0, d0 + (d1 - d0) * 0.2) : ry < 0.5 ? rand(d1 - (d1 - d0) * 0.2, d1) : rand(d0, d1);
-  c.ty = clamp(H * yFrac, c.h * 0.5, H * 0.9);
+  c.yFrac = ry < 0.25 ? rand(d0, d0 + (d1 - d0) * 0.2) : ry < 0.5 ? rand(d1 - (d1 - d0) * 0.2, d1) : rand(d0, d1);
+  c.ty = targetY(c);
+  // Target depth: some creatures come close to the viewer, some go far away.
+  const rd = Math.random();
+  c.td = rd < 0.2 ? rand(0, 0.12) : rd < 0.4 ? rand(0.88, 1) : rand(0, 1);
   c.wander = rand(5, 12);
 }
 
-function spawnSparks(x, y, radius, count) {
+function spawnSparks(x, y, radius, count, size = 1) {
   for (let i = 0; i < count && sparks.length < MAX_SPARKS; i++) {
     const a = Math.random() * TAU;
     const d = Math.random() * radius;
@@ -200,7 +239,7 @@ function spawnSparks(x, y, radius, count) {
       y: y + Math.sin(a) * d,
       vx: rand(-20, 20),
       vy: rand(-40, -5),
-      r: rand(1.5, 3.5),
+      r: rand(1.5, 3.5) * size,
       life: rand(0.8, 1.6),
       max: 1.6,
       color: ['#fff3b0', '#bff4ff', '#ffffff'][i % 3],
@@ -216,14 +255,16 @@ function spawnCreature(record, mode) {
     species: species.id,
     motion: species.motion,
     tune: TUNING[species.id] ?? DEFAULT_TUNING,
-    z: Math.random(),
+    d: Math.random(), // depth, see the header
+    td: 0, // target depth, picked in pickTarget
+    depthSpeed: rand(DEPTH_SPEED_MIN, DEPTH_SPEED_MAX),
+    yFrac: 0, // where in the species' depth band the target lies
     phase: Math.random() * TAU,
     jetOffset: Math.random(),
     eyes: species.eyes,
     lids: [],
     blinkAt: rand(1, 5),
     t: 0,
-    scale: 0,
     w: 0,
     h: 0,
     baseSpeed: 0,
@@ -246,22 +287,24 @@ function spawnCreature(record, mode) {
     img: null,
     sprite: null,
   };
-  c.scale = 0.55 + 0.3 * c.z;
   computeSize(c);
 
+  // Start inside the species' depth band, within the room this depth allows.
   const [d0, d1] = c.motion.depth;
-  c.y = clamp(H * rand(d0, d1), c.h * 0.5, H * 0.9);
+  c.yFrac = rand(d0, d1);
+  const [lo, hi] = yBounds(c);
+  c.y = lo + (hi - lo) * c.yFrac;
   if (mode === 'add') {
     // New creatures swim in from one side of the screen.
     const dir = Math.random() < 0.5 ? 1 : -1;
-    c.x = dir > 0 ? -c.w * 0.6 : W + c.w * 0.6;
-    c.vx = dir * c.baseSpeed * 2;
+    c.x = dir > 0 ? -screenW(c) * 0.6 : W + screenW(c) * 0.6;
+    c.vx = dir * c.baseSpeed * persp(c.d) * 2;
     c.state = 'enter';
     c.age = 0;
     c.glow = GLOW_SECONDS;
   } else {
-    c.x = rand(c.w * 0.5, W - c.w * 0.5);
-    c.vx = (Math.random() < 0.5 ? -1 : 1) * c.baseSpeed;
+    c.x = rand(screenW(c) * 0.5, W - screenW(c) * 0.5);
+    c.vx = (Math.random() < 0.5 ? -1 : 1) * c.baseSpeed * persp(c.d);
     c.state = 'fade';
     c.age = 0;
   }
@@ -281,7 +324,6 @@ function spawnCreature(record, mode) {
   img.src = `/fish/${record.id}.png`;
 
   creatures.set(record.id, c);
-  orderDirty = true;
   updateHint();
   return c;
 }
@@ -290,7 +332,7 @@ function startLeave(c) {
   if (c.state === 'leave') return;
   c.state = 'leave';
   c.leaveAge = 0;
-  c.exitX = c.vx >= 0 ? W + c.w * 2 : -c.w * 2;
+  c.exitX = c.vx >= 0 ? W + screenW(c) * 2 : -screenW(c) * 2;
   if (c.sprite) scenery.burst(c.x, c.y, 8);
 }
 
@@ -303,9 +345,10 @@ function applySeparation(dt) {
     const a = list[i];
     for (let j = i + 1; j < list.length; j++) {
       const b = list[j];
+      if (Math.abs(a.d - b.d) >= SEPARATION_DEPTH) continue;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
-      const reach = (a.w + b.w) * 0.3;
+      const reach = (screenW(a) + screenW(b)) * 0.3;
       const d2 = dx * dx + dy * dy;
       if (d2 >= reach * reach || d2 === 0) continue;
       const d = Math.sqrt(d2);
@@ -338,21 +381,26 @@ function updateCreature(c, dt) {
     if (c.alpha <= 0 || c.leaveAge > LEAVE_SECONDS + 0.5) return false;
   }
 
+  // Depth eases towards the target depth, never faster than depthSpeed.
+  c.d += clamp((c.td - c.d) * 0.6, -c.depthSpeed, c.depthSpeed) * dt;
+  const p = persp(c.d);
+
   if (c.glow > 0 && c.sprite) {
     c.glow -= dt;
-    if (Math.random() < dt * 14) spawnSparks(c.x, c.y, c.w * 0.5, 1);
+    if (Math.random() < dt * 14) spawnSparks(c.x, c.y, (c.w * p) * 0.5, 1, p);
   }
 
-  // Wander to a target inside the species' depth band.
+  // Wander to a target inside the species' depth band, at the current depth.
   if (c.state !== 'leave') {
     c.wander -= dt;
+    c.ty = targetY(c);
     const dx = c.tx - c.x;
     const dy = c.ty - c.y;
     if (c.wander <= 0 || dx * dx + dy * dy < (H * 0.05) ** 2) pickTarget(c);
   }
 
   // Speed, with the squid's jet pulses and the turtle's slow stroke.
-  let speed = c.baseSpeed;
+  let speed = c.baseSpeed * p;
   if (type === 'drift') {
     // The bell contracts, pushes the jellyfish forward, then it coasts.
     const p = ((c.t + c.jetOffset * JELLY_PERIOD) / JELLY_PERIOD) % 1;
@@ -376,7 +424,7 @@ function updateCreature(c, dt) {
   const dx = c.tx - c.x;
   const dy = c.ty - c.y;
   const d = Math.hypot(dx, dy) || 1;
-  const wobble = c.state === 'leave' ? 0 : Math.sin(c.t * 0.7 + c.phase) * 0.35;
+  const wobble = c.state === 'leave' ? 0 : Math.sin(c.t * 0.7 + c.phase) * 0.35 * p;
   const cs = Math.cos(wobble);
   const sn = Math.sin(wobble);
   const ux = (dx * cs - dy * sn) / d;
@@ -388,9 +436,13 @@ function updateCreature(c, dt) {
   c.x += c.vx * dt;
   c.y += c.vy * dt;
 
+  // Re-clamped every frame, so a creature that moves towards the viewer is
+  // pulled up or down to stay on the sand at its new depth.
   if (c.state !== 'leave') {
-    c.x = clamp(c.x, -c.w * 0.3, W + c.w * 0.3);
-    c.y = clamp(c.y, c.h * 0.5, H * 0.9);
+    const margin = screenW(c) * 0.3;
+    c.x = clamp(c.x, -margin, W + margin);
+    const [lo, hi] = yBounds(c);
+    c.y = clamp(c.y, lo, hi);
   }
 
   // Mirror smoothly when the heading changes, and tilt with the vertical speed.
@@ -402,7 +454,7 @@ function updateCreature(c, dt) {
   const targetPitch = UPRIGHT.has(type) ? 0 : clamp(Math.atan2(c.vy, Math.max(Math.abs(c.vx), 30)) * 0.8, -0.2, 0.2);
   c.pitch += (targetPitch - c.pitch) * Math.min(1, dt * 4);
 
-  if (c.state === 'leave' && (c.x < -c.w * 2.5 || c.x > W + c.w * 2.5)) return false;
+  if (c.state === 'leave' && (c.x < -screenW(c) * 2.5 || c.x > W + screenW(c) * 2.5)) return false;
   return true;
 }
 
@@ -411,8 +463,10 @@ function updateCreature(c, dt) {
 // `shear` is the tilt (tan of the pitch). It is a vertical offset per strip
 // rather than ctx.rotate: a rotated transform sends every drawImage down a slow
 // path. With strips a few px wide the offset steps stay below about 1 px.
-function drawStrips(c, amp, shear) {
-  const img = c.sprite;
+// `img` is the sprite or its fog silhouette; both bend the same way.
+// `over` is the strip overlap in sprite units (one screen pixel), which hides
+// seams between strips.
+function drawStrips(c, img, amp, shear, over) {
   const tune = c.tune;
   const y0 = -c.h / 2;
   const phase = time * tune.hz * TAU + c.phase;
@@ -421,23 +475,26 @@ function drawStrips(c, amp, shear) {
     const s = strips[k];
     const weight = Math.pow(1 - s.xn, tune.tailPow);
     const dy = amp * c.h * weight * Math.sin(phase + tune.spatial * s.xn) + (s.dx + s.dw / 2) * shear;
-    // One extra device pixel of overlap hides seams between strips.
-    ctx.drawImage(img, s.sx * img.width, 0, s.sw * img.width, img.height, s.dx, y0 + dy, s.dw + 1, c.h);
+    ctx.drawImage(img, s.sx * img.width, 0, s.sw * img.width, img.height, s.dx, y0 + dy, s.dw + over, c.h);
   }
 }
 
 // Upright creatures: horizontal rows shifted sideways, more towards the
 // bottom, so tentacles and tails sway while the head stays still.
-function drawRows(c, amp) {
-  const img = c.sprite;
+function drawRows(c, img, amp, over) {
   const tune = c.tune;
   const x0 = -c.w / 2;
   const phase = time * tune.hz * TAU + c.phase;
   for (const r of c.rows) {
     const weight = Math.pow(r.yn, tune.tailPow);
     const dx = amp * c.w * weight * Math.sin(phase - tune.spatial * r.yn);
-    ctx.drawImage(img, 0, r.sy * img.height, img.width, r.sh * img.height, x0 + dx, r.dy, c.w, r.dh + 1);
+    ctx.drawImage(img, 0, r.sy * img.height, img.width, r.sh * img.height, x0 + dx, r.dy, c.w, r.dh + over);
   }
+}
+
+function drawBody(c, img, amp, shear, over) {
+  if (UPRIGHT.has(c.motion.type)) drawRows(c, img, amp, over);
+  else drawStrips(c, img, amp, shear, over);
 }
 
 // Blinking: an eyelid in the colour around the eye slides down and back up.
@@ -475,6 +532,7 @@ function drawLids(c, shear) {
 function drawCreature(c) {
   if (!c.sprite || c.alpha <= 0.005) return;
   const type = c.motion.type;
+  const p = persp(c.d);
   let shear = Math.tan(c.pitch);
   let sx = 1;
   let sy = 1;
@@ -495,9 +553,9 @@ function drawCreature(c) {
     // getting narrower and wider.
     sy = 1 + 0.1 * Math.sin(time * TAU * c.tune.hz + c.phase);
   } else if (type === 'hover') {
-    bob = Math.sin(time * TAU * 0.3 + c.phase) * c.h * 0.04;
+    bob = Math.sin(time * TAU * 0.3 + c.phase) * screenH(c) * 0.04;
   } else if (type === 'paddle') {
-    bob = Math.sin(time * TAU * 0.35 + c.phase) * c.h * 0.03;
+    bob = Math.sin(time * TAU * 0.35 + c.phase) * screenH(c) * 0.03;
     shear += Math.sin(time * TAU * 0.25 + c.phase * 0.5) * 0.035;
     sx *= 1 + Math.sin(time * TAU * 0.5 + c.phase) * 0.012;
   }
@@ -506,20 +564,29 @@ function drawCreature(c) {
   if (c.state === 'enter') grow = 0.7 + 0.3 * easeOutCubic(Math.min(1, c.age / ENTER_SECONDS));
   else if (c.state === 'leave') grow = 1 - 0.12 * Math.min(1, c.leaveAge / LEAVE_SECONDS);
 
+  const haze = depth.fogAt(c.d);
+  // One screen pixel of strip overlap, in sprite units, hides the seams.
+  const over = 1 / p;
+
   ctx.save();
-  ctx.globalAlpha = c.alpha * (0.8 + 0.2 * c.z);
+  ctx.globalAlpha = c.alpha;
   ctx.translate(c.x, c.y + bob);
-  ctx.scale(c.f * sx * grow, sy * grow);
-  if (UPRIGHT.has(type)) drawRows(c, amp);
-  else drawStrips(c, amp, shear);
+  ctx.scale(c.f * sx * grow * p, sy * grow * p);
+  drawBody(c, c.sprite, amp, shear, over);
   drawLids(c, UPRIGHT.has(type) ? 0 : shear);
+  if (haze >= FOG_MIN) {
+    // The silhouette bends exactly like the body, so the haze follows it. It has
+    // no overlap: a semi-transparent strip drawn twice would show as stripes.
+    ctx.globalAlpha = c.alpha * haze;
+    drawBody(c, c.fogSprite, amp, shear, 0);
+  }
   ctx.restore();
 }
 
 function drawGlow(c) {
   if (c.glow <= 0 || !c.sprite) return;
   const k = c.glow / GLOW_SECONDS;
-  const r = c.w * 0.9;
+  const r = screenW(c) * 0.9;
   const grad = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r);
   grad.addColorStop(0, 'rgba(190, 248, 255, 0.45)');
   grad.addColorStop(1, 'rgba(190, 248, 255, 0)');
@@ -564,7 +631,6 @@ function reconcileAll(list) {
   for (const c of creatures.values()) {
     if (!ids.has(c.id)) startLeave(c);
   }
-  orderDirty = true;
   updateHint();
 }
 
@@ -653,11 +719,9 @@ function render() {
   ctx.globalCompositeOperation = 'source-over';
   scenery.drawBack(ctx, time);
 
-  if (orderDirty) {
-    drawOrder = [...creatures.values()].sort((a, b) => a.z - b.z);
-    orderDirty = false;
-  }
-  for (const c of drawOrder) {
+  // Far creatures first, so nearer ones pass in front of them.
+  const order = [...creatures.values()].sort((a, b) => a.d - b.d);
+  for (const c of order) {
     drawGlow(c);
     drawCreature(c);
   }
@@ -680,10 +744,7 @@ function frame(now) {
       removed = true;
     }
   }
-  if (removed) {
-    orderDirty = true;
-    updateHint();
-  }
+  if (removed) updateHint();
   updateScenery(dt);
   render();
   requestAnimationFrame(frame);
@@ -725,7 +786,22 @@ function setup() {
   });
 
   // Small hook for tests and debugging; read-only.
-  window.__aquarium = { count: liveCount };
+  window.__aquarium = {
+    count: liveCount,
+    // Depth and screen extent of each live creature.
+    snapshot: () =>
+      [...creatures.values()]
+        .filter((c) => c.state !== 'leave')
+        .map((c) => ({
+          id: c.id,
+          species: c.species,
+          d: c.d,
+          y: c.y,
+          bottom: c.y + screenH(c) / 2,
+          sand: depth.floorY(c.d),
+          w: screenW(c),
+        })),
+  };
 
   connect();
   requestAnimationFrame((now) => {

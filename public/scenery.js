@@ -72,8 +72,12 @@ export function createScenery() {
   // Sand line for a given depth d (0 = horizon, 1 = bottom of the screen).
   const floorTop = () => H * 0.7;
   const floorY = (d) => floorTop() + (H - floorTop()) * (0.06 + 0.9 * d);
-  const scaleAt = (d) => unit * (0.28 + 0.85 * d);
+  const sizeAt = (d) => 0.28 + 0.85 * d; // relative size of objects at depth d
+  const scaleAt = (d) => unit * sizeAt(d);
   const fogAt = (d) => 0.82 * (1 - d) ** 1.25;
+  // Creature size relative to the front (d = 1): about 0.43 far away. Same
+  // curve as scaleAt, softened so that small far creatures stay readable.
+  const perspective = (d) => (sizeAt(d) / sizeAt(1)) ** 0.6;
 
   // -------------------------------------------------------------------------
   // Static painters
@@ -850,6 +854,9 @@ export function createScenery() {
   }
 
   return {
+    // Depth model for the creatures: the same sand line, size and fog as the scenery.
+    depth: { floorY, perspective, fogAt, fog: FOG },
+
     resize(width, height, ratio, ctx) {
       const sx = W ? width / W : 1;
       const sy = H ? height / H : 1;

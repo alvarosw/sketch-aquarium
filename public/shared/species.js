@@ -142,11 +142,11 @@ const shark = (() => {
   };
   const body = [
     [239, 86], [232, 71], [214, 59], [186, 52], [150, 50], [114, 54], [84, 62], [62, 70], [46, 74],
-    [46, 82], [64, 88], [90, 96], [124, 104], [164, 108], [192, 113], [212, 119],
-    [226, 120, true], // lower jaw tip
-    ...jaw(226, 118, 202, 102, 5, -5), // lower teeth point up
-    [198, 99, true], // corner of the mouth
-    ...jaw(201, 97, 234, 91, 6, 4.5), // upper teeth point down
+    [46, 82], [64, 88], [90, 96], [124, 104], [164, 108], [196, 111], [218, 111],
+    [229, 108, true], // lower jaw tip
+    ...jaw(229, 108, 200, 99, 5, -5.5), // lower teeth point up
+    [198, 97, true], // corner of the mouth
+    ...jaw(200, 96, 234, 91, 6, 5.5), // upper teeth point down
     [235, 91, true],
   ];
   const tail = [
